@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"net"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +10,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
+
+const defaultPort = 5555
+const broadcastAddr = "255.255.255.255"
 
 // ---------------- PeerSet ----------------
 type peerSet struct {
@@ -124,6 +125,12 @@ func runIntroducer(listen string) error {
 }
 
 func (in *introducer) handle(from *net.UDPAddr, msg string) {
+	if msg == "HELLO" {
+		// Antwort auf Broadcast
+		in.reply(from, "I_AM_INTRODUCER")
+		return
+	}
+
 	parts := strings.Fields(msg)
 	if len(parts) < 2 {
 		return
@@ -154,42 +161,57 @@ func (in *introducer) handle(from *net.UDPAddr, msg string) {
 	}
 }
 
+func (in *introducer) reply(to *net.UDPAddr, msg string) {
+	_, _ = in.conn.WriteToUDP([]byte(msg), to)
+}
+
+// ---------------- Auto-Start ----------------
+func detectIntroducer() *net.UDPAddr {
+	laddr, _ := net.ResolveUDPAddr("udp", ":0")
+	conn, err := net.ListenUDP("udp", laddr)
+	if err != nil {
+		fmt.Println("Fehler beim Öffnen des Sockets:", err)
+		return nil
+	}
+	defer conn.Close()
+
+	raddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", broadcastAddr, defaultPort))
+	_, _ = conn.WriteToUDP([]byte("HELLO"), raddr)
+
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 1024)
+	n, addr, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		return nil
+	}
+	if string(buf[:n]) == "I_AM_INTRODUCER" {
+		return addr
+	}
+	return nil
+}
+
+func autoStart(name, room string) {
+	introducerAddr := detectIntroducer()
+	if introducerAddr != nil {
+		fmt.Println("Introducer gefunden:", introducerAddr.String())
+		err := runPeerTUI(name, room, introducerAddr.String(), fmt.Sprintf(":%d", defaultPort))
+		if err != nil {
+			fmt.Println("Peer Fehler:", err)
+		}
+	} else {
+		fmt.Println("Kein Introducer gefunden. Starte selbst als Introducer.")
+		err := runIntroducer(fmt.Sprintf(":%d", defaultPort))
+		if err != nil {
+			fmt.Println("Introducer Fehler:", err)
+		}
+	}
+}
+
 // ---------------- Main ----------------
 func main() {
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Willst du Introducer (Server) oder Peer (Client) sein? [I/P]: ")
-	roleInput, _ := reader.ReadString('\n')
-	roleInput = strings.TrimSpace(strings.ToUpper(roleInput))
+	// Name / Raum
+	name := fmt.Sprintf("peer-%d", time.Now().Unix()%10000)
+	room := "default"
 
-	port := ":5555" // Standardport
-
-	switch roleInput {
-	case "I":
-		fmt.Println("Starte Introducer auf Port", port)
-		if err := runIntroducer(port); err != nil {
-			fmt.Println("Fehler:", err)
-		}
-	case "P":
-		fmt.Print("Gib deinen Namen ein: ")
-		name, _ := reader.ReadString('\n')
-		name = strings.TrimSpace(name)
-		if name == "" {
-			name = fmt.Sprintf("peer-%d", time.Now().Unix()%10000)
-		}
-		fmt.Print("Gib den Raum ein: ")
-		room, _ := reader.ReadString('\n')
-		room = strings.TrimSpace(room)
-		if room == "" {
-			room = "default"
-		}
-		fmt.Print("Introducer-Adresse (IP:5555) eingeben oder leer lassen für keine: ")
-		introAddr, _ := reader.ReadString('\n')
-		introAddr = strings.TrimSpace(introAddr)
-
-		if err := runPeerTUI(name, room, introAddr, port); err != nil {
-			fmt.Println("Fehler:", err)
-		}
-	default:
-		fmt.Println("Ungültige Auswahl. Bitte I oder P eingeben.")
-	}
+	autoStart(name, room)
 }
