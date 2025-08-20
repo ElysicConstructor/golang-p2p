@@ -12,7 +12,6 @@ import (
 )
 
 const defaultPort = 5555
-const broadcastAddr = "255.255.255.255"
 
 // ---------------- PeerSet ----------------
 type peerSet struct {
@@ -125,12 +124,6 @@ func runIntroducer(listen string) error {
 }
 
 func (in *introducer) handle(from *net.UDPAddr, msg string) {
-	if msg == "HELLO" {
-		// Antwort auf Broadcast
-		in.reply(from, "I_AM_INTRODUCER")
-		return
-	}
-
 	parts := strings.Fields(msg)
 	if len(parts) < 2 {
 		return
@@ -166,50 +159,33 @@ func (in *introducer) reply(to *net.UDPAddr, msg string) {
 }
 
 // ---------------- Auto-Start ----------------
-func detectIntroducer() *net.UDPAddr {
-	laddr, _ := net.ResolveUDPAddr("udp", ":0")
-	conn, err := net.ListenUDP("udp", laddr)
-	if err != nil {
-		fmt.Println("Fehler beim Öffnen des Sockets:", err)
-		return nil
-	}
-	defer conn.Close()
-
-	raddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", broadcastAddr, defaultPort))
-	_, _ = conn.WriteToUDP([]byte("HELLO"), raddr)
-
-	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	buf := make([]byte, 1024)
-	n, addr, err := conn.ReadFromUDP(buf)
-	if err != nil {
-		return nil
-	}
-	if string(buf[:n]) == "I_AM_INTRODUCER" {
-		return addr
-	}
-	return nil
-}
-
 func autoStart(name, room string) {
-	introducerAddr := detectIntroducer()
-	if introducerAddr != nil {
-		fmt.Println("Introducer gefunden:", introducerAddr.String())
-		err := runPeerTUI(name, room, introducerAddr.String(), fmt.Sprintf(":%d", defaultPort))
-		if err != nil {
-			fmt.Println("Peer Fehler:", err)
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", defaultPort))
+	if err != nil {
+		panic(err)
+	}
+
+	// Versuch den Port zu binden
+	conn, err := net.ListenUDP("udp", addr)
+	if err == nil {
+		// Port frei → Introducer
+		conn.Close()
+		fmt.Println("Port frei → Rolle: Introducer")
+		if err := runIntroducer(fmt.Sprintf(":%d", defaultPort)); err != nil {
+			fmt.Println("Introducer Fehler:", err)
 		}
 	} else {
-		fmt.Println("Kein Introducer gefunden. Starte selbst als Introducer.")
-		err := runIntroducer(fmt.Sprintf(":%d", defaultPort))
-		if err != nil {
-			fmt.Println("Introducer Fehler:", err)
+		// Port belegt → Peer
+		fmt.Println("Port belegt → Rolle: Peer")
+		introAddr := fmt.Sprintf("127.0.0.1:%d", defaultPort) // standardmäßig lokale Verbindung, ggf. anpassen
+		if err := runPeerTUI(name, room, introAddr, fmt.Sprintf(":%d", defaultPort)); err != nil {
+			fmt.Println("Peer Fehler:", err)
 		}
 	}
 }
 
 // ---------------- Main ----------------
 func main() {
-	// Name / Raum
 	name := fmt.Sprintf("peer-%d", time.Now().Unix()%10000)
 	room := "default"
 
